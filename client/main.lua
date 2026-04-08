@@ -1,9 +1,60 @@
--- ─────────────────────────────────────────────────────
--- Client 入口：車輛偵測、主循環、HUD 循環
--- ─────────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════
+-- client/main.lua
+-- Client 入口：車輛偵測、主循環
+--
+-- 架構說明：
+--   新核心（GB.*）負責 gear/rpm/clutch 的計算與 native 同步
+--   舊模組（modules/）的 HUD、menu、sounds、drift、launch、damage、upgrade 繼續運作
+--   GearboxState = GB.State（alias）確保舊模組的讀寫直接作用在 GB.State
+-- ═══════════════════════════════════════════════════════════════
 
--- ── 車輛進入偵測（輪詢，500ms 間隔）─────────────────────
--- 注意：離車偵測由主循環負責（帶 debounce），此處只處理進車。
+-- ─────────────────────────────────────────────────────────────
+-- 相容性橋接：舊 API 路由到新核心
+-- input.lua 呼叫 TriggerShift / ToggleNeutral，這裡重定向
+-- ─────────────────────────────────────────────────────────────
+function TriggerShift(direction)
+    local state = GB.State
+    local cfg   = state.cfg
+    if not state.inVehicle or not cfg then return end
+    if not state.engineOn then return end
+    if state.isShifting   then return end
+
+    if     cfg.type == GearboxConst.Type.ATMT then GB.ATMT.Shift(direction)
+    elseif cfg.type == GearboxConst.Type.MT   then GB.MT.Shift(direction)
+    -- AT 不接受手動換檔，無動作
+    end
+end
+
+function ToggleNeutral()
+    local state = GB.State
+    if not state.inVehicle then return end
+    local cfg = state.cfg
+    if not cfg or cfg.type ~= GearboxConst.Type.MT then return end
+    GB.Core.ToggleNeutral()
+end
+
+function SetNeutral(toNeutral)
+    GB.Core.SetNeutral(toNeutral)
+end
+
+-- 舊 gearbox.lua 的 ChangeTransmission 路由
+function ChangeTransmission(key)
+    GB.Core.ChangeTransmission(key)
+    -- 舊的持久化事件仍在 state 初始化/離車時觸發，不需要在這裡重複
+end
+
+-- 取得當前有效 cfg（舊模組呼叫）
+function GetActiveTransmissionConfig()
+    return GB.State.cfg
+end
+
+function GetActiveTransmissionMaxGear()
+    return GB.State.cfg and GB.State.cfg.maxGear or nil
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- 車輛進入偵測（500ms 輪詢）
+-- ─────────────────────────────────────────────────────────────
 local _wasInVehicle = false
 
 CreateThread(function()
@@ -12,167 +63,176 @@ CreateThread(function()
         local ped     = PlayerPedId()
         local vehicle = GetVehiclePedIsIn(ped, false)
         local inVehicle = vehicle ~= 0
-            and GetPedInVehicleSeat(vehicle, -1) == ped  -- 確認是駕駛座
+            and GetPedInVehicleSeat(vehicle, -1) == ped
 
-        if inVehicle and not GearboxState.inVehicle then
-            OnEnterVehicle(vehicle)
+        if inVehicle and not GB.State.inVehicle then
+            _OnEnterVehicle(vehicle)
         end
 
         _wasInVehicle = inVehicle
     end
 end)
 
-function OnEnterVehicle(vehicle)
-    GearboxStateInit(vehicle)
-    -- 向 server 請求持久化資料（帶入 model 名稱讓 server 查表）
+-- ─────────────────────────────────────────────────────────────
+-- _OnEnterVehicle(vehicle)
+-- ─────────────────────────────────────────────────────────────
+function _OnEnterVehicle(vehicle)
+    -- 初始化狀態（同時設定 GearboxState alias）
+    GB.State.Init(vehicle)
+
+    -- 讀取 handling snapshot
+    GB.GearRatios.CaptureSnapshot(vehicle)
+
+    -- 解析傳動型號
+    local modelName = GB.State.modelName
+    local transmKey = Config.VehicleTransmissions and Config.VehicleTransmissions[modelName]
+
+    if transmKey and Config.Transmissions and Config.Transmissions[transmKey] then
+        GB.Core.ChangeTransmission(transmKey)
+    else
+        -- STOCK：不套用自訂 handling
+        GB.State.transmKey = 'STOCK'
+        GB.State.cfg       = nil
+    end
+
+    -- 向 server 請求持久化資料
     TriggerServerEvent(GearboxConst.Events.LOAD_SETTINGS, {
-        vehicleNetId = GearboxState.vehicleNetId,
-        modelName    = GearboxState.modelName,
-        vehiclePlate = GearboxState.vehiclePlate,
+        vehicleNetId = GB.State.vehicleNetId,
+        modelName    = GB.State.modelName,
+        vehiclePlate = GB.State.vehiclePlate,
     })
+
     if Config.Debug then
-        print(('[Main] Entered vehicle %d | transm=%s'):format(vehicle, GearboxState.transmKey))
+        print(('[Main] Entered vehicle %d | model=%s transm=%s')
+            :format(vehicle, GB.State.modelName, GB.State.transmKey))
     end
 end
 
-function OnExitVehicle()
-    local vehicle = GearboxState.vehicle
+-- ─────────────────────────────────────────────────────────────
+-- _OnExitVehicle()
+-- ─────────────────────────────────────────────────────────────
+function _OnExitVehicle()
+    local vehicle = GB.State.vehicle
+
+    -- 清除 StateBag
     LocalPlayer.state:set('gearboxScriptGear', nil, false)
 
-    if GearboxState.vehicleNetId ~= 0 then
+    -- 儲存設定到 server
+    if GB.State.vehicleNetId ~= 0 then
         TriggerServerEvent(GearboxConst.Events.SAVE_SETTINGS, {
-            vehicleNetId = GearboxState.vehicleNetId,
-            vehicleModel = GearboxState.modelName,
-            vehiclePlate = GearboxState.vehiclePlate,
-            transmKey    = GearboxState.transmKey,
-            clutchHealth = GearboxState.clutchHealth,
-            handlingOverrides = GearboxState.handlingOverrides,
+            vehicleNetId  = GB.State.vehicleNetId,
+            vehicleModel  = GB.State.modelName,
+            vehiclePlate  = GB.State.vehiclePlate,
+            transmKey     = GB.State.transmKey,
+            clutchHealth  = GB.State.clutchHealth,
         })
     end
 
+    -- 還原 handling
     if vehicle ~= 0 and DoesEntityExist(vehicle) then
-        RestoreVehicleGearHandling(vehicle)
+        GB.GearRatios.RestoreSnapshot(vehicle)
     end
 
-    GearboxStateReset()
-    if Config.Debug then
-        print('[Main] Exited vehicle')
-    end
+    -- 重設 native_adapter 內部狀態
+    GB.Native.Reset()
+
+    -- 重設 state
+    GB.State.Reset()
+
+    if Config.Debug then print('[Main] Exited vehicle') end
 end
 
--- ── 資源停止時還原 handling ───────────────────────────
--- 資源重啟時若不還原，GTA 會保留已修改的 handling 值；
--- 下次進車 CaptureVehicleHandlingBackup 就捕捉到壞掉的 fInitialDriveMaxFlatVel。
+-- ─────────────────────────────────────────────────────────────
+-- 資源停止時還原 handling
+-- ─────────────────────────────────────────────────────────────
 AddEventHandler('onClientResourceStop', function(resourceName)
     if GetCurrentResourceName() ~= resourceName then return end
-    local vehicle = GearboxState.vehicle
+    local vehicle = GB.State.vehicle
     if vehicle and vehicle ~= 0 and DoesEntityExist(vehicle) then
-        RestoreVehicleGearHandling(vehicle)
+        GB.GearRatios.RestoreSnapshot(vehicle)
     end
 end)
 
--- ── 主循環 ────────────────────────────────────────────
--- 離車偵測集中在此（帶 1000ms debounce），避免 500ms 輪詢在
--- 按下離合器的瞬間誤判短暫離座（GTA 物理/動畫抖動）而重置狀態。
-local _lastFrameTime = GetGameTimer()
-local _notInSeatSince = 0
-local NOT_IN_SEAT_DEBOUNCE_MS = 1000  -- 持續離座 1 秒才視為真正離車
+-- ─────────────────────────────────────────────────────────────
+-- 主循環
+-- ─────────────────────────────────────────────────────────────
+local _lastFrameTime    = GetGameTimer()
+local _notInSeatSince   = 0
+local NOT_IN_SEAT_DEBOUNCE_MS = 1000
 
--- 安全呼叫包裝：任何模組更新拋出 Lua runtime error 時，
--- 只記錄錯誤並跳過當幀，不讓整個主執行緒崩潰死亡。
-local function SafeUpdate(fn, dt)
-    local ok, err = pcall(fn, dt)
-    if not ok then
-        print('[Gearbox][ERROR] ' .. tostring(err))
-    end
+local function SafeCall(fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then print('[Gearbox][ERROR] ' .. tostring(err)) end
 end
 
 CreateThread(function()
     while true do
         local now = GetGameTimer()
 
-        if GearboxState.inVehicle then
-            -- 確認車輛仍然有效，玩家仍在駕駛座
-            local ped = PlayerPedId()
-            local inSeat = DoesEntityExist(GearboxState.vehicle)
-                and GetPedInVehicleSeat(GearboxState.vehicle, -1) == ped
+        if GB.State.inVehicle then
+            local ped    = PlayerPedId()
+            local inSeat = DoesEntityExist(GB.State.vehicle)
+                and GetPedInVehicleSeat(GB.State.vehicle, -1) == ped
 
             if not inSeat then
-                -- 防抖：短暫離座不立即觸發（碰撞彈出、輸入動畫、物理抖動）
+                -- 防抖離座偵測
                 if _notInSeatSince == 0 then
                     _notInSeatSince = now
                 elseif (now - _notInSeatSince) >= NOT_IN_SEAT_DEBOUNCE_MS then
                     _notInSeatSince = 0
-                    OnExitVehicle()
+                    _OnExitVehicle()
                 end
                 _lastFrameTime = now
                 Wait(50)
 
-            elseif GearboxState.cfg then
-                -- 在座 + 有變速箱設定：每幀執行物理更新
+            elseif GB.State.cfg then
+                -- 在座 + 有變速箱設定：每幀物理更新
                 _notInSeatSince = 0
                 local dt = math.min((now - _lastFrameTime) / 1000.0, 0.10)
                 _lastFrameTime = now
 
-                -- 同步 GTA 引擎狀態
-                GearboxState.engineOn = IsVehicleEngineOn(GearboxState.vehicle)
+                -- ── 1. 讀取所有輸入 ────────────────────────
+                SafeCall(GB.State.ReadInputs)
 
-                -- 不只限制 Lua 狀態，也要每幀限制 GTA 原生實際檔位
-                EnforceTransmissionGearLimit(GearboxState.vehicle, {
-                    maxGear = GetActiveTransmissionMaxGear() or GearboxState.cfg.maxGear,
-                })
+                -- ── 2. 離合器 ──────────────────────────────
+                SafeCall(GB.Clutch.Tick, dt)
 
-                -- 各模組更新（pcall 保護：任一錯誤只影響當幀，不殺死執行緒）
-                SafeUpdate(UpdateClutch, dt)
-                SafeUpdate(UpdatePhysics, dt)
-                SafeUpdate(UpdateStall, dt)
-                SafeUpdate(UpdateTemperature, dt)
-                SafeUpdate(UpdateDrift, dt)
-                SafeUpdate(UpdateLaunchControl, dt)
+                -- ── 3. RPM 引擎 ────────────────────────────
+                -- AT：直讀 native（不寫回）
+                -- ATMT/MT：計算 + SetVehicleCurrentRpm
+                SafeCall(GB.RPM.Tick, dt)
 
-                -- AT 自動換檔
-                local activeCfg = GetActiveTransmissionConfig() or GearboxState.cfg
-                if activeCfg and activeCfg.type == GearboxConst.Type.AT then
-                    SafeUpdate(UpdateAT, dt)
-                elseif activeCfg and (
-                    activeCfg.type == GearboxConst.Type.ATMT
-                    or activeCfg.type == GearboxConst.Type.MT
-                ) then
-                    local ok, err = pcall(ApplyManualTransmissionLock, GearboxState.vehicle)
-                    if not ok then print('[Gearbox][ERROR] ' .. tostring(err)) end
+                -- ── 4. 核心 Tick（gear 同步 + dirty flags）
+                SafeCall(GB.Core.Tick, dt)
+
+                -- ── 5. 模式邏輯 ────────────────────────────
+                local cfg = GB.State.cfg
+                if cfg then
+                    if cfg.type == GearboxConst.Type.AT then
+                        SafeCall(GB.AT.Tick, dt)
+                    elseif cfg.type == GearboxConst.Type.ATMT then
+                        SafeCall(GB.ATMT.Tick, dt)
+                    elseif cfg.type == GearboxConst.Type.MT then
+                        SafeCall(GB.MT.Tick, dt)
+                    end
                 end
 
-                -- GTA 自動切換了檔位時（例如倒退、GTA 引擎行為），同步回狀態
-                if activeCfg
-                    and activeCfg.type == GearboxConst.Type.AT
-                    and not GearboxState.isShifting
-                    and not GearboxState.isNeutral
+                -- ── 6. 功能模組 ────────────────────────────
+                SafeCall(GB.Stall.Tick, dt)
+                SafeCall(GB.EngineBrake.Tick, dt)
+
+                -- 舊功能模組（仍使用 GearboxState，但 alias 指向 GB.State）
+                SafeCall(UpdateTemperature, dt)  -- modules/damage.lua
+                SafeCall(UpdateDrift, dt)        -- modules/drift.lua
+                SafeCall(UpdateLaunchControl, dt) -- modules/launch.lua
+
+                -- ── 7. StateBag 廣播（ATMT/MT 的腳本檔位給外部 HUD）
+                if cfg and (cfg.type == GearboxConst.Type.ATMT
+                    or cfg.type == GearboxConst.Type.MT)
                 then
-                    local gtaGear = GetVehicleCurrentGear(GearboxState.vehicle)
-                    local maxGear = GetActiveTransmissionMaxGear()
-                    if maxGear and gtaGear > maxGear then
-                        EnforceTransmissionGearLimit(GearboxState.vehicle, { maxGear = maxGear })
-                        gtaGear = maxGear
-                    end
-
-                    -- AT scripted 模式下，不強制把 GTA 原生換檔打回舊檔。
-                    -- 強制鎖檔已移至 UpdateAT 的換檔冷卻期間（shiftTimer），
-                    -- 平時讓 GTA 物理自由加速，避免驅動力被鎖死在低檔。
-                    if gtaGear > 0 and gtaGear ~= GearboxState.currentGear then
-                        GearboxState.currentGear = gtaGear
-                    end
-                end
-
-                -- ATMT/MT：通知外部 HUD（如 jg-hud）目前的腳本檔位
-                -- GTA 原生 GetVehicleCurrentGear 因齒比鎖定而固定回傳 1，
-                -- 透過 StateBag 讓 HUD 讀到正確的腳本檔位。
-                if activeCfg and (
-                    activeCfg.type == GearboxConst.Type.ATMT
-                    or activeCfg.type == GearboxConst.Type.MT
-                ) then
-                    LocalPlayer.state:set('gearboxScriptGear', GearboxState.currentGear, false)
+                    LocalPlayer.state:set('gearboxScriptGear', GB.State.currentGear, false)
                 else
-                    -- AT / STOCK：GTA 原生檔位正確，清除覆蓋
+                    -- AT/STOCK：清除覆蓋，讓外部 HUD 讀原生
                     if LocalPlayer.state.gearboxScriptGear ~= nil then
                         LocalPlayer.state:set('gearboxScriptGear', nil, false)
                     end
@@ -181,27 +241,31 @@ CreateThread(function()
                 Wait(0)
 
             else
-                -- 在座 + STOCK 模式（無變速箱設定）：僅監控離座，降低 CPU 占用
+                -- 在座 + STOCK 模式：只監控離座
                 _notInSeatSince = 0
-                _lastFrameTime = now
+                _lastFrameTime  = now
                 Wait(100)
             end
 
         else
-            -- 不在車上：重設計時器，降低 CPU 占用
             _notInSeatSince = 0
-            _lastFrameTime = now
+            _lastFrameTime  = now
             Wait(500)
         end
     end
 end)
 
--- ── HUD 繪製循環（Wait(0) 每幀執行，獨立 Thread）─────────
+-- ─────────────────────────────────────────────────────────────
+-- HUD 繪製循環（獨立 Thread）
+-- ─────────────────────────────────────────────────────────────
 CreateThread(function()
     while true do
         Wait(0)
-        if GearboxState.inVehicle then
-            DrawGearboxHUD()
+        if GB.State.inVehicle then
+            -- DrawGearboxHUD 仍讀 GearboxState（= GB.State），無需修改
+            if type(DrawGearboxHUD) == 'function' then
+                DrawGearboxHUD()
+            end
         end
     end
 end)
