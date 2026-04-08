@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gearbox</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <div id="app" class="gb-app gb-hidden" aria-hidden="true">
+
+        <main class="gb-shell" role="dialog" aria-modal="true" aria-label="變速箱系統">
+
+            <!-- ── Header ──────────────────────────────────── -->
+            <header class="gb-header">
+                <div class="gb-brand">
+                    <div class="gb-brand-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h1 class="gb-title">變速箱系統</h1>
+                        <p class="gb-subtitle" id="gb-subtitle">設定與升級</p>
+                    </div>
+                </div>
+                <div class="gb-header-right">
+                    <span class="gb-mode-pill gb-hidden" id="gb-mode-pill"></span>
+                    <button id="btnClose" class="gb-icon-btn gb-icon-btn-danger" type="button" title="關閉 (Escape)">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+                    </button>
+                </div>
+            </header>
+
+            <!-- ── Body ────────────────────────────────────── -->
+            <div class="gb-body">
+
+                <!-- Left panel: status + assists + actions -->
+                <aside class="gb-panel gb-panel-left">
+
+                    <!-- Status card -->
+                    <div class="gb-card" id="card-status">
+                        <div class="gb-card-label">目前變速箱</div>
+                        <div class="gb-transm-display">
+                            <span class="gb-transm-name" id="status-name">－</span>
+                            <div class="gb-transm-badges" id="status-badges"></div>
+                        </div>
+
+                        <div class="gb-stat-block">
+                            <div class="gb-stat-row">
+                                <span class="gb-stat-label">離合器耐久</span>
+                                <span class="gb-stat-value" id="val-clutch">－</span>
+                            </div>
+                            <div class="gb-bar-track">
+                                <div class="gb-bar-fill" id="bar-clutch" style="width:0%"></div>
+                            </div>
+                        </div>
+
+                        <div class="gb-stat-block" id="temp-block" style="display:none">
+                            <div class="gb-stat-row">
+                                <span class="gb-stat-label">變速箱溫度</span>
+                                <span class="gb-stat-value" id="val-temp">－</span>
+                            </div>
+                            <div class="gb-bar-track">
+                                <div class="gb-bar-fill" id="bar-temp" style="width:0%"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Assist toggles (hidden in upgrade mode) -->
+                    <div class="gb-card" id="card-assists">
+                        <div class="gb-card-label">輔助功能</div>
+                        <div class="gb-toggle-list">
+                            <button class="gb-toggle-row" data-assist="antiStall" type="button" id="tog-antistall">
+                                <span class="gb-toggle-label">防熄火輔助</span>
+                                <span class="gb-switch" aria-hidden="true"><span class="gb-switch-knob"></span></span>
+                            </button>
+                            <button class="gb-toggle-row" data-assist="revMatch" type="button" id="tog-revmatch">
+                                <span class="gb-toggle-label">轉速匹配輔助</span>
+                                <span class="gb-switch" aria-hidden="true"><span class="gb-switch-knob"></span></span>
+                            </button>
+                            <button class="gb-toggle-row gb-hidden" data-assist="driftMode" type="button" id="tog-drift">
+                                <span class="gb-toggle-label">漂移模式（Clutch Kick）</span>
+                                <span class="gb-switch" aria-hidden="true"><span class="gb-switch-knob"></span></span>
+                            </button>
+                        </div>
+
+                        <!-- Launch control info -->
+                        <div class="gb-launch gb-hidden" id="launch-info">
+                            <div class="gb-launch-status" id="launch-status">Launch Control</div>
+                            <div class="gb-launch-hint">全油門 + 全煞車 + 靜止 → 鬆煞車發車</div>
+                        </div>
+                    </div>
+
+                    <!-- Gear ratio editor (settings mode, non-stock only) -->
+                    <div class="gb-card gb-hidden" id="card-gearratio">
+                        <div class="gb-gr-header">
+                            <span class="gb-card-label">齒比調整</span>
+                            <button class="gb-btn gb-btn-ghost gb-btn-sm" id="btn-gr-reset-all" type="button">全部重設</button>
+                        </div>
+                        <div class="gb-gr-grid" id="gr-grid"></div>
+                        <button class="gb-btn gb-btn-primary gb-btn-sm" id="btn-gr-apply" type="button">套用並儲存</button>
+                    </div>
+
+                    <!-- Action buttons -->
+                    <div class="gb-panel-actions">
+                        <button class="gb-btn gb-btn-warn gb-hidden" id="btn-repair" type="button">
+                            維修離合器
+                            <span class="gb-btn-badge" id="repair-cost"></span>
+                        </button>
+                    </div>
+
+                </aside>
+
+                <!-- Right panel: transmission list -->
+                <section class="gb-panel gb-panel-right">
+                    <div class="gb-panel-head">
+                        <h2 class="gb-panel-title" id="list-title">選擇變速箱</h2>
+                        <span class="gb-panel-hint" id="list-hint"></span>
+                    </div>
+                    <div class="gb-transm-list" id="transm-list" role="listbox" aria-label="變速箱列表"></div>
+                </section>
+
+            </div><!-- /gb-body -->
+        </main>
+
+        <!-- ── Confirm purchase modal ──────────────────────── -->
+        <div id="modal" class="gb-modal gb-hidden" aria-hidden="true">
+            <div class="gb-modal-backdrop" id="modal-backdrop"></div>
+            <div class="gb-modal-card" role="dialog" aria-modal="true" aria-label="確認購買">
+                <header class="gb-modal-head">
+                    <h3>確認購買</h3>
+                    <button id="btnModalClose" class="gb-icon-btn" type="button" title="取消">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>
+                    </button>
+                </header>
+                <div class="gb-modal-body">
+                    <p id="modal-text"></p>
+                </div>
+                <footer class="gb-modal-actions">
+                    <button id="btnModalCancel" class="gb-btn gb-btn-secondary" type="button">取消</button>
+                    <button id="btnModalConfirm" class="gb-btn gb-btn-primary" type="button">確認購買</button>
+                </footer>
+            </div>
+        </div>
+
+    </div><!-- /gb-app -->
+
+    <script src="app.js"></script>
+</body>
+</html>

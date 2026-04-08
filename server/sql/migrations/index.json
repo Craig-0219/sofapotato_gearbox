@@ -1,0 +1,7 @@
+{
+  "files": [
+    "001_init.sql",
+    "002_add_unlocked_transmissions.sql",
+    "003_align_default_transmission.sql"
+  ]
+}
