@@ -226,6 +226,9 @@ CreateThread(function()
                 SafeCall(UpdateDrift, dt)        -- modules/drift.lua
                 SafeCall(UpdateLaunchControl, dt) -- modules/launch.lua
 
+                -- ── 6.5 功能請求統一輸出（launch / drift 等）──────
+                SafeCall(GB.Native.ApplyFeatureRequests, GB.State.vehicle)
+
                 -- ── 7. StateBag 廣播（ATMT/MT 的腳本檔位給外部 HUD）
                 if cfg and (cfg.type == GearboxConst.Type.ATMT
                     or cfg.type == GearboxConst.Type.MT)
