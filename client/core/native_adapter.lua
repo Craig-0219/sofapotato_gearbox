@@ -170,6 +170,16 @@ function GB.Native.SyncGear(vehicle, gear)
     SetVehicleNextGear(vehicle, gear)
 end
 
+-- 每幀同步齒比扭力倍率（搭配 highGear=currentGear 使用）
+-- GTA 每幀把 SetVehicleEngineTorqueMultiplier 重設為 1.0，必須每幀維持。
+-- 當 _torqueCutActive=true（MT 離合切斷）時跳過，不可干擾離合切斷的 0.0 設定。
+function GB.Native.SyncGearTorque(vehicle, scale)
+    if not VehicleValid(vehicle) then return end
+    if _torqueCutActive then return end
+    if type(SetVehicleEngineTorqueMultiplier) ~= 'function' then return end
+    SetVehicleEngineTorqueMultiplier(vehicle, scale or 1.0)
+end
+
 -- 離合器切斷時每幀設 torque multiplier = 0
 -- GTA 每幀 reset 為 1.0，必須每幀維持
 -- 接合時呼叫一次 reset（設為 1.0），之後不需要每幀設

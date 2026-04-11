@@ -239,8 +239,11 @@ function GB.GearRatios.ApplyToVehicle(vehicle, cfg)
         end
     end
 
-    -- ── 3. 設定 highGear = maxGear（保留完整 torque curve）──
-    --   不設成 currentGear，設成 currentGear 會讓 torqueMultiplier = 1.0 永遠不變
+    -- ── 3. 初始 highGear = maxGear ───────────────────────────────
+    --   [FIX-D 說明] ATMT/MT 模式下，ApplyManualTruth 每幀會覆寫 highGear = currentGear，
+    --   以防止 GTA AT 邏輯在「高檔低速」時把 throttleOffset 鎖為 0。
+    --   AT 模式仍在 ExecuteShift → SyncATHighGear 中設定 highGear = scriptGear。
+    --   此處設 maxGear 為初始值；ATMT/MT 進入第一幀 ApplyManualTruth 後即被覆蓋。
     if type(SetVehicleHighGear) == 'function' then
         SetVehicleHighGear(vehicle, maxGear)
     end
