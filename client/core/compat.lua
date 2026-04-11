@@ -1,4 +1,13 @@
 -- ═══════════════════════════════════════════════════════════════
+
+local _compatWarned = {}
+local function CompatWarn(name, note)
+    if _compatWarned[name] then return end
+    _compatWarned[name] = true
+    if Config and Config.Debug then
+        print(('[Compat][DEPRECATED] %s -> %s'):format(name, note or 'migrate to core API'))
+    end
+end
 -- client/core/compat.lua
 -- 相容橋接層
 --
@@ -6,6 +15,8 @@
 --       全域函式，對應到新架構的等效實作。
 --
 -- 這個檔案在新架構穩定後可逐步縮減，最終刪除。
+-- TODO(Phase4-remove-compat): 本檔所有 alias/bridge 均為暫時相容層。
+-- 新核心不得依賴 compat；HUD/menu/sounds/upgrade 全數遷移後刪除此檔。
 -- ═══════════════════════════════════════════════════════════════
 
 -- ─────────────────────────────────────────────────────────────
@@ -100,9 +111,7 @@ function EnforceTransmissionGearLimit(vehicle, cfg)
     if type(cfg) ~= 'table' or not cfg.maxGear then return end
     -- 新架構由 gearbox_core.Tick() 的 SyncGear 負責每幀同步，
     -- 這裡只做安全截斷（超出 maxGear 的情況）
-    if type(SetVehicleHighGear) == 'function' then
-        SetVehicleHighGear(vehicle, cfg.maxGear)
-    end
+    GB.Native.SetHighGear(vehicle, cfg.maxGear)
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -121,6 +130,7 @@ end
 -- 舊 state.lua 的函式，menu.lua 會呼叫
 -- ─────────────────────────────────────────────────────────────
 function RefreshActiveTransmissionRuntimeConfig()
+    CompatWarn('RefreshActiveTransmissionRuntimeConfig', 'read GB.State.cfg directly')
     -- 新架構不使用 runtimeCfg，齒比在 BuildPerGearCache 一次計算
     -- 回傳 cfg 本身保持相容
     return GB.State.cfg
@@ -132,8 +142,9 @@ end
 -- 在新架構中，handling 由 gear_ratios.lua 統一管理
 -- ─────────────────────────────────────────────────────────────
 function BuildTransmissionHandlingOverrides(cfg, handlingBackup, modelName)
-    -- 轉接到新的 gear_ratios 系統
-    -- 回傳一個空表（實際套用改由 GB.GearRatios.ApplyToVehicle 負責）
+    CompatWarn('BuildTransmissionHandlingOverrides', 'menu should send ratios only')
+    -- TODO(Phase4-remove-compat): menu 模組完成遷移後刪除此 alias。
+    -- 新架構不再由 menu 計算 handlingOverrides，先回傳空表保持相容。
     return {}
 end
 
@@ -141,7 +152,9 @@ end
 -- ApplyGearRatiosToVehicle（menu.lua 的齒比調整功能）
 -- ─────────────────────────────────────────────────────────────
 function ApplyGearRatiosToVehicle(vehicle, cfg, handlingOverrides)
+    CompatWarn('ApplyGearRatiosToVehicle', 'call GB.GearRatios.* directly')
     if not cfg then return end
+    -- TODO(Phase4-remove-compat): menu 直接呼叫 core API 後刪除。
     GB.State.cfg = cfg
     GB.GearRatios.BuildPerGearCache(cfg, GB.State.handlingSnapshot)
     GB.GearRatios.ApplyToVehicle(vehicle, cfg)
@@ -184,31 +197,12 @@ local _RATIO_FIELD_TO_INDEX = {
 }
 
 function ApplyVehicleHandlingOverrides(vehicle, handlingOverrides)
+    CompatWarn('ApplyVehicleHandlingOverrides', 'replace with core ratio API')
     if vehicle == 0 or not DoesEntityExist(vehicle) then return end
     if type(handlingOverrides) ~= 'table' then return end
 
-    for field, value in pairs(handlingOverrides) do
-        local ratioIndex = _RATIO_FIELD_TO_INDEX[field]
-        if ratioIndex and type(value) == 'number' and type(SetVehicleGearRatio) == 'function' then
-            SetVehicleGearRatio(vehicle, ratioIndex, value)
-        elseif field == 'fInitialDriveMaxFlatVel' and type(value) == 'number' then
-            if type(SetVehicleHandlingFloat) == 'function' then
-                SetVehicleHandlingFloat(vehicle, 'CHandlingData', field, value)
-            end
-        elseif field == 'fInitialDriveForce' and type(value) == 'number' then
-            if type(SetVehicleHandlingFloat) == 'function' then
-                SetVehicleHandlingFloat(vehicle, 'CHandlingData', field, value)
-                GB.State._appliedDriveForce = value
-            end
-        elseif field == 'nInitialDriveGears' and type(value) == 'number' then
-            if type(SetVehicleHandlingInt) == 'function' then
-                SetVehicleHandlingInt(vehicle, 'CHandlingData', field, math.floor(value))
-            end
-            if type(SetVehicleHighGear) == 'function' then
-                SetVehicleHighGear(vehicle, math.floor(value))
-            end
-        end
-    end
+    -- TODO(Phase4-remove-compat): menu 停止傳遞 handlingOverrides 後刪除此 alias。
+    -- 這裡不再直接寫 native，統一走 core/native_adapter。
 
     -- 重建 per-gear cache（齒比可能已被手動修改）
     local cfg = GB.State.cfg
@@ -228,8 +222,36 @@ function ApplyVehicleHandlingOverrides(vehicle, handlingOverrides)
         local tmpCfg = {}
         for k, v in pairs(cfg) do tmpCfg[k] = v end
         tmpCfg.gearRatios = newRatios
-        GB.GearRatios.BuildPerGearCache(tmpCfg, GB.State.handlingSnapshot)
-        -- 同步 dirty flag（換檔後更新頂速）
+
+        if type(handlingOverrides.nInitialDriveGears) == 'number' then
+            tmpCfg.maxGear = math.floor(handlingOverrides.nInitialDriveGears)
+        end
+
+        -- 齒比/檔數統一交給 core 套用（內部會更新 per-gear cache）
+        ApplyGearRatiosToVehicle(vehicle, tmpCfg, handlingOverrides)
+
+        -- 非齒比欄位：改走 native_adapter
+        if type(handlingOverrides.fInitialDriveForce) == 'number' then
+            GB.Native.SetDriveForce(vehicle, handlingOverrides.fInitialDriveForce)
+            GB.State._appliedDriveForce = handlingOverrides.fInitialDriveForce
+        end
+
+        if type(handlingOverrides.fInitialDriveMaxFlatVel) == 'number' then
+            local topSpeedMps = handlingOverrides.fInitialDriveMaxFlatVel
+            -- 相容舊 menu：若傳入 km/h（通常 > 90）轉為 m/s
+            if topSpeedMps > 90.0 then
+                topSpeedMps = topSpeedMps / 3.6
+            end
+            GB.Native.SetGearSpeedLimit(vehicle, topSpeedMps)
+        end
+
+        if type(handlingOverrides.nInitialDriveGears) == 'number' then
+            local maxGear = math.floor(handlingOverrides.nInitialDriveGears)
+            GB.Native.SetDriveGears(vehicle, maxGear)
+            GB.Native.SetHighGear(vehicle, maxGear)
+        end
+
+        -- 同步 dirty flag（換檔後更新 per-gear 限速）
         GB.State.speedLimitDirty = true
     end
 end

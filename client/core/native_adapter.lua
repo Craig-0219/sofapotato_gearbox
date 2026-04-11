@@ -23,6 +23,20 @@ local function VehicleValid(v)
     return v and v ~= 0 and DoesEntityExist(v)
 end
 
+local function _HighestPriorityValue(sourceMap, priority)
+    local bestValue, bestOrder = nil, math.huge
+    for source, value in pairs(sourceMap or {}) do
+        if value ~= nil then
+            local order = (priority and priority[source]) or 999
+            if order < bestOrder then
+                bestOrder = order
+                bestValue = value
+            end
+        end
+    end
+    return bestValue
+end
+
 -- ═══════════════════════════════════════════════════════════════
 -- INIT_TIME：進車或換型號時呼叫，不應重複呼叫
 -- ═══════════════════════════════════════════════════════════════
@@ -160,6 +174,8 @@ end
 -- GTA 每幀 reset 為 1.0，必須每幀維持
 -- 接合時呼叫一次 reset（設為 1.0），之後不需要每幀設
 local _torqueCutActive = false
+local _tractionBaseByVehicle = {}
+local _tractionAppliedByVehicle = {}
 
 function GB.Native.SyncTorqueCut(vehicle, cut)
     if not VehicleValid(vehicle) then return end
@@ -201,4 +217,75 @@ function GB.Native.Reset()
     _clutchForceCutActive = false
     _savedDriveForce      = nil
     _torqueCutActive      = false
+    _tractionBaseByVehicle = {}
+    _tractionAppliedByVehicle = {}
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- Feature request API（給 drift / launch / sounds 等功能模組使用）
+-- 功能模組只允許寫 request，不允許直接寫 drivetrain native
+-- ═══════════════════════════════════════════════════════════════
+
+function GB.Native.SetFeatureRpmOverride(source, rpm)
+    local req = GB.State.featureRequests
+    if not req or not source then return end
+    req.rpmOverride[source] = rpm and math.clamp(rpm, 0.0, 1.0) or nil
+end
+
+function GB.Native.SetFeatureGearLock(source, gear)
+    local req = GB.State.featureRequests
+    if not req or not source then return end
+    req.gearLock[source] = gear and math.floor(gear) or nil
+end
+
+function GB.Native.SetFeatureTractionScale(source, scale)
+    local req = GB.State.featureRequests
+    if not req or not source then return end
+    req.tractionScale[source] = scale and math.clamp(scale, 0.2, 1.5) or nil
+end
+
+-- 每幀在功能模組更新後呼叫一次，統一輸出 feature 對 native 的影響
+function GB.Native.ApplyFeatureRequests(vehicle)
+    if not VehicleValid(vehicle) then return end
+    local req = GB.State.featureRequests
+    if not req then return end
+
+    local rpmPriority = { launch = 10 }
+    local gearPriority = { launch = 10 }
+    local tractionPriority = { drift = 10 }
+
+    local rpm = _HighestPriorityValue(req.rpmOverride, rpmPriority)
+    if rpm ~= nil then
+        GB.Native.SyncRpm(vehicle, rpm)
+        GB.State.rpm = rpm
+        GB.State.targetRpm = rpm
+    end
+
+    local forcedGear = _HighestPriorityValue(req.gearLock, gearPriority)
+    if forcedGear and forcedGear > 0 then
+        GB.Native.SyncGear(vehicle, forcedGear)
+        GB.State.currentGear = forcedGear
+        GB.State.desiredGear = forcedGear
+    end
+
+    local tractionScale = _HighestPriorityValue(req.tractionScale, tractionPriority) or 1.0
+    local vid = VehToNet(vehicle)
+    if type(SetVehicleHandlingFloat) == 'function' then
+        if not _tractionBaseByVehicle[vid] and type(GetVehicleHandlingFloat) == 'function' then
+            local base = GetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fTractionCurveLateral')
+            if type(base) == 'number' and base > 0 then
+                _tractionBaseByVehicle[vid] = base
+            end
+        end
+
+        local base = _tractionBaseByVehicle[vid]
+        if base and base > 0 then
+            local applied = base * tractionScale
+            local last = _tractionAppliedByVehicle[vid]
+            if (not last) or math.abs(last - applied) > 0.0005 then
+                SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fTractionCurveLateral', applied)
+                _tractionAppliedByVehicle[vid] = applied
+            end
+        end
+    end
 end

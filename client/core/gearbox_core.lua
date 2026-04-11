@@ -230,8 +230,7 @@ function GB.Core.Tick(dt)
     -- 每幀強制同步 SetVehicleCurrentGear + SetVehicleNextGear
     -- 必須搭配正確 RPM，否則 GTA AT 邏輯會 override
     if state:IsManualMode() and not state.reversing then
-        local g = math.max(1, math.min(state.currentGear, state:MaxGear()))
-        GB.Native.SyncGear(state.vehicle, g)
+        GB.GearSync.ApplyManualTruth(state.vehicle)
     end
 end
 

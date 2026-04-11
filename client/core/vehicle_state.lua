@@ -96,6 +96,15 @@ local STATE_DEFAULTS = {
     -- gearNativeDirty: ATMT/MT 需強制同步 SetVehicleCurrentGear
     gearNativeDirty   = true,
 
+    -- ── Feature 請求（功能模組只能寫請求，不可直寫 native）──
+    -- 結構：
+    -- featureRequests = {
+    --   rpmOverride = { [source] = rpm01 },
+    --   gearLock    = { [source] = gear },
+    --   tractionScale = { [source] = scale01_to_1_5 },
+    -- }
+    featureRequests   = nil,
+
     -- ── 解鎖清單（從 server 載入，跨車保留）────────────────
     unlockedTransmissions = {},
 }
@@ -144,6 +153,12 @@ function GB.State.Init(vehicle)
     -- 初始速度
     local vel = GetEntitySpeedVector(vehicle, true)
     GB.State.vehicleSpeed = math.max(0.0, vel.y or 0.0)
+
+    GB.State.featureRequests = {
+        rpmOverride   = {},
+        gearLock      = {},
+        tractionScale = {},
+    }
 end
 
 -- ─────────────────────────────────────────────────────────────

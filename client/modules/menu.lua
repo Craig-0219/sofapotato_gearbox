@@ -167,7 +167,6 @@ function ChangeTransmission(key)
     if useStock then
         ApplyTransmissionState(state.vehicle, key)
     else
-        SetVehicleCurrentGear(state.vehicle, 1)
         ApplyTransmissionState(state.vehicle, key)
     end
 
@@ -272,29 +271,22 @@ RegisterNUICallback('applyGearRatios', function(data, cb)
         end
     end
 
-    -- 依新頂檔齒比重新計算極速上限
-    -- 規則：以 maxSpeedRatio 為基準極速，再乘以（原始頂檔齒比 / 新頂檔齒比）
-    -- 齒比降低（更長）→ 比值 > 1 → 尾速提高；反之亦然
-    local backup = GearboxState.handlingBackup
-    if backup and type(backup.maxFlatVel) == 'number' and backup.maxFlatVel > 0 then
-        local originalTopRatio = cfg.gearRatios[cfg.maxGear] or 1.0
-        local newTopRatio      = newOverrides[GEAR_FIELD_NAMES[cfg.maxGear]] or originalTopRatio
-        if originalTopRatio > 0 and newTopRatio > 0 then
-            local baseMaxVel  = backup.maxFlatVel * math.clamp(cfg.maxSpeedRatio or 1.0, 0.25, 2.0)
-            local ratioScale  = originalTopRatio / newTopRatio
-            local newMaxVel   = math.clamp(baseMaxVel * ratioScale, backup.maxFlatVel * 0.20, backup.maxFlatVel * 2.50)
-            newOverrides.fInitialDriveMaxFlatVel = newMaxVel
-
-            -- 不設定 SetVehicleMaxSpeed：與 ApplyTransmissionState 一致，依賴 GTA 物理限速
-            if type(SetVehicleMaxSpeed) == 'function' then
-                SetVehicleMaxSpeed(state.vehicle, 0.0)
-            end
-        end
-    end
-
+    -- Phase 3：menu 不再自行計算 fInitialDriveMaxFlatVel / handling 極速欄位。
+    -- 極速與扭力統一由 snapshot + perGearCache（core/gear_ratios.lua）管理。
     state.handlingOverrides = newOverrides
-    RefreshActiveTransmissionRuntimeConfig()  -- 重建 runtimeCfg.gearRatios，使 RPM 公式與 SetVehicleMaxSpeed 立即反映新齒比
-    ApplyVehicleHandlingOverrides(state.vehicle, newOverrides)
+
+    -- 以新齒比建立臨時 cfg，交給 core 套用（一次重建 cache + 套用到車輛）
+    local tmpCfg = {}
+    for k, v in pairs(cfg) do tmpCfg[k] = v end
+    local mergedRatios = {}
+    for i = 1, cfg.maxGear do
+        local field = GEAR_FIELD_NAMES[i]
+        mergedRatios[i] = (field and newOverrides[field]) or cfg.gearRatios[i] or 1.0
+    end
+    tmpCfg.gearRatios = mergedRatios
+
+    ApplyGearRatiosToVehicle(state.vehicle, tmpCfg, newOverrides)
+    GB.State.speedLimitDirty = true
 
     -- 同步儲存
     TriggerServerEvent(GearboxConst.Events.SAVE_SETTINGS, {

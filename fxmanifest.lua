@@ -26,6 +26,7 @@ client_scripts {
     'client/core/vehicle_state.lua',   -- GB.State + GearboxState alias
     'client/core/gear_ratios.lua',     -- 齒比系統（預算、套用、snapshot）
     'client/core/native_adapter.lua',  -- GTA native 唯一入口（分類管理）
+    'client/core/gear_sync.lua',       -- drivetrain authority / gear sync policy
     'client/core/gearbox_core.lua',    -- ExecuteShift、SetNeutral、ChangeTransmission
     'client/core/rpm_engine.lua',      -- RPM 模擬（ATMT/MT 用）
     'client/core/clutch_engine.lua',   -- 離合器引擎（二元，可擴展類比）
@@ -39,6 +40,9 @@ client_scripts {
     -- ── 新功能模組
     'client/features/stall.lua',
     'client/features/engine_braking.lua',
+    'client/features/drift.lua',
+    'client/features/launch_control.lua',
+    'client/features/sounds.lua',
 
     -- ── 保留的舊模組（讀 GearboxState = GB.State，無需修改）
     -- 移除：modules/state.lua、modules/clutch.lua、modules/physics.lua
@@ -47,9 +51,6 @@ client_scripts {
     'client/modules/damage.lua',
     'client/modules/hud.lua',
     'client/modules/menu.lua',
-    'client/modules/drift.lua',
-    'client/modules/launch.lua',
-    'client/modules/sounds.lua',
     'client/modules/upgrade.lua',
 
     -- ── 主循環（最後載入）

@@ -39,14 +39,8 @@ function GB.AT.Tick(dt)
     end
 
     -- ── 同步 GTA 原生檔位 → state ────────────────────────
-    local nativeGear = GetVehicleCurrentGear(vehicle)
+    local nativeGear = GB.GearSync.PullATReference(vehicle, maxGear)
     if nativeGear and nativeGear > 0 then
-        -- 截斷超出 maxGear 的情況（其他讓 GTA 自然選擇）
-        if nativeGear > maxGear then
-            GB.Native.SetCurrentGear(vehicle, maxGear)
-            GB.Native.SetNextGear(vehicle, maxGear)
-            nativeGear = maxGear
-        end
         state.nativeGear = nativeGear
         if nativeGear ~= gear then
             state.currentGear = nativeGear
