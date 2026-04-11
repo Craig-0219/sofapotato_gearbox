@@ -211,6 +211,17 @@ function GB.Native.SyncATHighGear(vehicle, scriptGear, maxGear)
 end
 
 -- ═══════════════════════════════════════════════════════════════
+-- 診斷：回傳 native_adapter 內部狀態（供 debug dump 使用）
+-- ═══════════════════════════════════════════════════════════════
+function GB.Native.GetDebugState()
+    return {
+        clutchForceCutActive = _clutchForceCutActive,
+        torqueCutActive      = _torqueCutActive,
+        savedDriveForce      = _savedDriveForce,
+    }
+end
+
+-- ═══════════════════════════════════════════════════════════════
 -- 工具：重設 native_adapter 的內部 state（離車時呼叫）
 -- ═══════════════════════════════════════════════════════════════
 function GB.Native.Reset()

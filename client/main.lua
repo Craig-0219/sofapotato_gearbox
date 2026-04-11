@@ -143,6 +143,84 @@ function _OnExitVehicle()
 end
 
 -- ─────────────────────────────────────────────────────────────
+-- Debug Dump（Step 2）
+--
+-- 手動：F8 輸入 gearbox_debug_dump
+-- 自動：Config.F8GearDebug = true 且 gear >= 3、低速、油門 > 0.3
+--        每 2 秒最多輸出一次（throttle），避免 log 洗版
+-- ─────────────────────────────────────────────────────────────
+local _debugLastDumpTime = 0
+
+local function _GearboxDebugDump(label)
+    local state   = GB.State
+    local vehicle = state.vehicle
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
+        print('[GearboxDebug] No vehicle')
+        return
+    end
+
+    local nativeState = GB.Native.GetDebugState()
+    local driveForce  = type(GetVehicleHandlingFloat) == 'function'
+        and GetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce') or -1
+    local maxFlatVel  = type(GetVehicleHandlingFloat) == 'function'
+        and GetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel') or -1
+    local nativeGear  = type(GetVehicleCurrentGear) == 'function'
+        and GetVehicleCurrentGear(vehicle) or -1
+    local highGear    = type(GetVehicleHighGear) == 'function'
+        and GetVehicleHighGear(vehicle) or -1
+    local rpmNative   = type(GetVehicleCurrentRpm) == 'function'
+        and GetVehicleCurrentRpm(vehicle) or -1
+    local throttleNative = type(GetVehicleThrottleOffset) == 'function'
+        and GetVehicleThrottleOffset(vehicle) or -1
+
+    local cache    = state.perGearCache
+    local g        = state.currentGear or 0
+    local gearTop  = (cache and cache[g]) and (cache[g].topSpeedKmh) or -1
+
+    print(('[GearboxDebug][%s] ── gear state ─────────────────'):format(label or 'auto'))
+    print(('  scriptGear=%d  nativeGear=%d  highGear=%d  isNeutral=%s  isShifting=%s')
+        :format(g, nativeGear, highGear, tostring(state.isNeutral), tostring(state.isShifting)))
+    print(('  rpm_state=%.3f  rpm_native=%.3f  targetRpm=%.3f')
+        :format(state.rpm or 0, rpmNative, state.targetRpm or 0))
+    print(('  throttle_state=%.3f  throttle_native=%.3f  speed=%.1fkm/h  gearTopSpeed=%.1fkm/h')
+        :format(state.throttleInput or 0, throttleNative, (state.vehicleSpeed or 0) * 3.6, gearTop))
+    print(('  clutchKeyDown=%s  clutchAxis=%.3f  clutchDisengaged=%s')
+        :format(tostring(state.clutchKeyDown), state.clutchAxis or 0, tostring(state:ClutchDisengaged())))
+    print(('  driveForceCut=%s  torqueCut=%s  savedDriveForce=%s')
+        :format(tostring(nativeState.clutchForceCutActive), tostring(nativeState.torqueCutActive),
+                tostring(nativeState.savedDriveForce)))
+    print(('  fInitialDriveForce=%.5f  _appliedDriveForce=%s  fInitialDriveMaxFlatVel=%.3fm/s(%.1fkm/h)')
+        :format(driveForce, tostring(state._appliedDriveForce), maxFlatVel, maxFlatVel * 3.6))
+    print(('  transmKey=%s  engineOn=%s  reversing=%s')
+        :format(tostring(state.transmKey), tostring(state.engineOn), tostring(state.reversing)))
+    print('[GearboxDebug] ─────────────────────────────────────')
+end
+
+-- 手動 F8 指令
+RegisterCommand('gearbox_debug_dump', function()
+    _GearboxDebugDump('manual')
+end, false)
+
+-- 自動觸發：低速 + 高檔 + 油門 → 每 2 秒輸出一次
+local function _MaybeAutoDebug()
+    if not Config.F8GearDebug then return end
+    local state = GB.State
+    if not state.inVehicle or not state.cfg then return end
+
+    local gear  = state.currentGear or 0
+    local speed = (state.vehicleSpeed or 0) * 3.6  -- km/h
+    local thr   = state.throttleInput or 0
+
+    if gear >= 3 and speed < 60 and thr > 0.3 then
+        local now = GetGameTimer()
+        if (now - _debugLastDumpTime) >= 2000 then
+            _debugLastDumpTime = now
+            _GearboxDebugDump(('gear%d_%.0fkmh'):format(gear, speed))
+        end
+    end
+end
+
+-- ─────────────────────────────────────────────────────────────
 -- 資源停止時還原 handling
 -- ─────────────────────────────────────────────────────────────
 AddEventHandler('onClientResourceStop', function(resourceName)
@@ -228,6 +306,9 @@ CreateThread(function()
 
                 -- ── 6.5 功能請求統一輸出（launch / drift 等）──────
                 SafeCall(GB.Native.ApplyFeatureRequests, GB.State.vehicle)
+
+                -- ── 6.6 Debug 自動觸發（Config.F8GearDebug = true 時）──
+                SafeCall(_MaybeAutoDebug)
 
                 -- ── 7. StateBag 廣播（ATMT/MT 的腳本檔位給外部 HUD）
                 if cfg and (cfg.type == GearboxConst.Type.ATMT

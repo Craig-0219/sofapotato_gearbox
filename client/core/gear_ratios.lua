@@ -245,8 +245,9 @@ function GB.GearRatios.ApplyToVehicle(vehicle, cfg)
         SetVehicleHighGear(vehicle, maxGear)
     end
 
-    -- ── 4. 計算並套用 fInitialDriveMaxFlatVel（頂擋頂速）───
-    --   只設 maxGear 的頂速，per-gear 限速由 native_adapter 在換檔後更新
+    -- ── 4. 計算並套用 fInitialDriveMaxFlatVel（固定為頂擋頂速，不按換檔縮小）──
+    --   [FIX-C] 保持在 maxGear 頂速，確保任何檔位低速時 GTA naturalRpm 充足。
+    --   per-gear 速度限制改由 ApplyGearSpeedLimit → SetVehicleMaxSpeed 負責。
     local cache = GB.State.perGearCache
     if not cache then
         GB.GearRatios.BuildPerGearCache(cfg, snapshot)
@@ -256,7 +257,7 @@ function GB.GearRatios.ApplyToVehicle(vehicle, cfg)
     if cache and cache[maxGear] and type(SetVehicleHandlingFloat) == 'function' then
         local topSpeedMps = cache[maxGear].topSpeedMps
         SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel', topSpeedMps)
-        -- 同步 maxSpeed（頂擋頂速就是整體上限）
+        -- SetVehicleMaxSpeed 初始設為頂擋頂速；ApplyGearSpeedLimit 隨即依當前檔覆蓋
         if type(SetVehicleMaxSpeed) == 'function' then
             SetVehicleMaxSpeed(vehicle, topSpeedMps)
         end
@@ -317,20 +318,34 @@ function GB.GearRatios.ApplyGearSpeedLimit(vehicle, gear)
 
     local topSpeedMps = cache[gear].topSpeedMps
     local cfg = GB.State.cfg
-    local maxGear = cfg and cfg.maxGear or gear
 
-    -- fInitialDriveMaxFlatVel：設為當前檔頂速
-    -- GTA 的驅動力模型在此速度以上歸零，車子自然停止加速
-    -- 比 SetVehicleMaxSpeed 更「自然」（不是硬牆）
-    if type(SetVehicleHandlingFloat) == 'function' then
-        SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel', topSpeedMps)
+    -- [FIX-C] fInitialDriveMaxFlatVel 不再按檔位縮小。
+    --
+    -- 舊做法：每次換檔把 fInitialDriveMaxFlatVel 設成「當前檔頂速」（低檔 → 很小的值）。
+    -- 問題：GTA 內部用 naturalRpm = speed / fInitialDriveMaxFlatVel 來計算驅動力。
+    --       3 檔頂速 ≈ 88 km/h（24.4 m/s），在 20 km/h 時 naturalRpm = 0.228，
+    --       低於 GTA 扭矩曲線有效區間，導致驅動力幾乎為零 → 車子無法加速。
+    --       2 檔頂速 ≈ 61 km/h（16.9 m/s），同樣 20 km/h 時 naturalRpm = 0.330，
+    --       剛好在有效區間內，所以 2 檔可以加速。這就是「2 檔沒問題、3 檔以上不行」的根本原因。
+    --
+    -- 新做法：fInitialDriveMaxFlatVel 固定在 maxGear 頂速（由 ApplyToVehicle 設定後不再改動）。
+    --         這樣任何檔位在任何速度都有足夠的 naturalRpm，GTA 能正常輸出驅動力。
+    --         每檔頂速改用 SetVehicleMaxSpeed 硬限制。
+    --         （不在此處修改 fInitialDriveMaxFlatVel）
+
+    -- SetVehicleMaxSpeed：每檔頂速硬限制（取代舊的 fInitialDriveMaxFlatVel 自然衰減）
+    if type(SetVehicleMaxSpeed) == 'function' then
+        SetVehicleMaxSpeed(vehicle, topSpeedMps)
     end
 
-    -- SetVehicleMaxSpeed：安全網（防止 GTA 自己超速）
-    -- 設為 maxGear 頂速，不設成當前檔位（避免硬牆感）
-    -- 當前檔的頂速限制依賴 fInitialDriveMaxFlatVel 的自然衰減
-    if type(SetVehicleMaxSpeed) == 'function' and cache[maxGear] then
-        SetVehicleMaxSpeed(vehicle, cache[maxGear].topSpeedMps)
+    -- [FIX-B] 重新確認 fInitialDriveForce（防止 GTA 或外部資源靜默修改）
+    -- 只在離合器未切斷時重設，避免與 CutDriveForce(cut=true) 的 0.0001 值衝突
+    local appliedForce = GB.State._appliedDriveForce
+    if appliedForce and appliedForce > 0
+        and not GB.State:ClutchDisengaged()
+        and type(SetVehicleHandlingFloat) == 'function'
+    then
+        SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce', appliedForce)
     end
 
     -- 清除 dirty flag
