@@ -50,12 +50,16 @@ function GB.RPM.CalcThrottleFloor(throttle, cfg, isMT)
     local turboFactor = hasTurbo and (GB.State.turboBoost or 0.0) or 1.0
     local effectiveThr = throttle * (0.20 + turboFactor * 0.80)
 
+    -- [FIX] 舊版 ATMT 使用 0.30 倍率（最高 0.42 RPM），理由是「避免 UpdateAT 誤判升檔」。
+    -- 但 GB.ATMT.Tick 現在是空函式，根本沒有自動升檔邏輯。
+    -- 限制 ATMT 的 RPM 上限會直接削弱 GTA 的驅動力信號，導致高檔低速時無法加速。
+    -- 改為與 MT 相同的完整油門範圍。
     if isMT then
         -- MT：全油門時 RPM 接近紅線（讓 GTA 施加最大驅動力）
         return GearboxConst.Rpm.IDLE + effectiveThr * (GearboxConst.Rpm.REDLINE - GearboxConst.Rpm.IDLE)
     else
-        -- ATMT：保守 throttleFloor，避免 UpdateAT 誤判立即升檔
-        return GearboxConst.Rpm.IDLE + effectiveThr * 0.30
+        -- ATMT：同 MT，使用完整油門範圍（GB.ATMT.Tick 為空，無自動升檔風險）
+        return GearboxConst.Rpm.IDLE + effectiveThr * (GearboxConst.Rpm.REDLINE - GearboxConst.Rpm.IDLE)
     end
 end
 
