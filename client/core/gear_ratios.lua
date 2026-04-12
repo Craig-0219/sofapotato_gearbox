@@ -259,11 +259,10 @@ function GB.GearRatios.ApplyToVehicle(vehicle, cfg)
 
     if cache and cache[maxGear] and type(SetVehicleHandlingFloat) == 'function' then
         local topSpeedMps = cache[maxGear].topSpeedMps
+        -- 初始設頂擋頂速；ApplyGearSpeedLimit 隨即依當前檔覆蓋為 per-gear 值
+        -- SetVehicleMaxSpeed 已移除：配合 Fix-D highGear=currentGear 使用時，
+        -- SetVehicleMaxSpeed(X) 會讓 GTA 以 highGear 回算，產生 300+ m/s 的副作用
         SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel', topSpeedMps)
-        -- SetVehicleMaxSpeed 初始設為頂擋頂速；ApplyGearSpeedLimit 隨即依當前檔覆蓋
-        if type(SetVehicleMaxSpeed) == 'function' then
-            SetVehicleMaxSpeed(vehicle, topSpeedMps)
-        end
     end
 
     -- ── 5. 計算並套用 fInitialDriveForce ────────────────────
@@ -322,23 +321,18 @@ function GB.GearRatios.ApplyGearSpeedLimit(vehicle, gear)
     local topSpeedMps = cache[gear].topSpeedMps
     local cfg = GB.State.cfg
 
-    -- [FIX-C] fInitialDriveMaxFlatVel 不再按檔位縮小。
+    -- [FIX-C revert + Fix-D compatible] 每次換檔設定當前檔的 fInitialDriveMaxFlatVel。
     --
-    -- 舊做法：每次換檔把 fInitialDriveMaxFlatVel 設成「當前檔頂速」（低檔 → 很小的值）。
-    -- 問題：GTA 內部用 naturalRpm = speed / fInitialDriveMaxFlatVel 來計算驅動力。
-    --       3 檔頂速 ≈ 88 km/h（24.4 m/s），在 20 km/h 時 naturalRpm = 0.228，
-    --       低於 GTA 扭矩曲線有效區間，導致驅動力幾乎為零 → 車子無法加速。
-    --       2 檔頂速 ≈ 61 km/h（16.9 m/s），同樣 20 km/h 時 naturalRpm = 0.330，
-    --       剛好在有效區間內，所以 2 檔可以加速。這就是「2 檔沒問題、3 檔以上不行」的根本原因。
+    -- 配合 Fix-D（highGear = currentGear 每幀）：
+    --   naturalRpm = speed / fInitialDriveMaxFlatVel（齒比在 highGear=currentGear 時相消）
+    --   gear 3 頂速 24.4 m/s，60 km/h 時 naturalRpm = 0.683 → 正常扭力帶 ✓
+    --   到達頂速時 naturalRpm → 1.0+ → 驅動力自然衰減為 0 ✓
     --
-    -- 新做法：fInitialDriveMaxFlatVel 固定在 maxGear 頂速（由 ApplyToVehicle 設定後不再改動）。
-    --         這樣任何檔位在任何速度都有足夠的 naturalRpm，GTA 能正常輸出驅動力。
-    --         每檔頂速改用 SetVehicleMaxSpeed 硬限制。
-    --         （不在此處修改 fInitialDriveMaxFlatVel）
-
-    -- SetVehicleMaxSpeed：每檔頂速硬限制（取代舊的 fInitialDriveMaxFlatVel 自然衰減）
-    if type(SetVehicleMaxSpeed) == 'function' then
-        SetVehicleMaxSpeed(vehicle, topSpeedMps)
+    -- 已移除 SetVehicleMaxSpeed：
+    --   SetVehicleMaxSpeed(X) + highGear=N 會讓 GTA 以 highGear 反算
+    --   fInitialDriveMaxFlatVel = X × ratio[1] / ratio[N]，導致值爆炸（300+ m/s）。
+    if type(SetVehicleHandlingFloat) == 'function' then
+        SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel', topSpeedMps)
     end
 
     -- [FIX-B] 重新確認 fInitialDriveForce（防止 GTA 或外部資源靜默修改）
