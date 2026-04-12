@@ -239,8 +239,11 @@ function GB.GearRatios.ApplyToVehicle(vehicle, cfg)
         end
     end
 
-    -- ── 3. 設定 highGear = maxGear（保留完整 torque curve）──
-    --   不設成 currentGear，設成 currentGear 會讓 torqueMultiplier = 1.0 永遠不變
+    -- ── 3. 初始 highGear = maxGear ───────────────────────────────
+    --   [FIX-D 說明] ATMT/MT 模式下，ApplyManualTruth 每幀會覆寫 highGear = currentGear，
+    --   以防止 GTA AT 邏輯在「高檔低速」時把 throttleOffset 鎖為 0。
+    --   AT 模式仍在 ExecuteShift → SyncATHighGear 中設定 highGear = scriptGear。
+    --   此處設 maxGear 為初始值；ATMT/MT 進入第一幀 ApplyManualTruth 後即被覆蓋。
     if type(SetVehicleHighGear) == 'function' then
         SetVehicleHighGear(vehicle, maxGear)
     end
@@ -256,11 +259,10 @@ function GB.GearRatios.ApplyToVehicle(vehicle, cfg)
 
     if cache and cache[maxGear] and type(SetVehicleHandlingFloat) == 'function' then
         local topSpeedMps = cache[maxGear].topSpeedMps
+        -- 初始設頂擋頂速；ApplyGearSpeedLimit 隨即依當前檔覆蓋為 per-gear 值
+        -- SetVehicleMaxSpeed 已移除：配合 Fix-D highGear=currentGear 使用時，
+        -- SetVehicleMaxSpeed(X) 會讓 GTA 以 highGear 回算，產生 300+ m/s 的副作用
         SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel', topSpeedMps)
-        -- SetVehicleMaxSpeed 初始設為頂擋頂速；ApplyGearSpeedLimit 隨即依當前檔覆蓋
-        if type(SetVehicleMaxSpeed) == 'function' then
-            SetVehicleMaxSpeed(vehicle, topSpeedMps)
-        end
     end
 
     -- ── 5. 計算並套用 fInitialDriveForce ────────────────────
@@ -316,36 +318,43 @@ function GB.GearRatios.ApplyGearSpeedLimit(vehicle, gear)
     local cache = GB.State.perGearCache
     if not cache or not cache[gear] then return end
 
-    local topSpeedMps = cache[gear].topSpeedMps
-    local cfg = GB.State.cfg
+    local entry       = cache[gear]
+    local topSpeedMps = entry.topSpeedMps
+    local torqueScale = entry.torqueScale   -- ratio[gear] / ratio[maxGear]
+    local state       = GB.State
 
-    -- [FIX-C] fInitialDriveMaxFlatVel 不再按檔位縮小。
-    --
-    -- 舊做法：每次換檔把 fInitialDriveMaxFlatVel 設成「當前檔頂速」（低檔 → 很小的值）。
-    -- 問題：GTA 內部用 naturalRpm = speed / fInitialDriveMaxFlatVel 來計算驅動力。
-    --       3 檔頂速 ≈ 88 km/h（24.4 m/s），在 20 km/h 時 naturalRpm = 0.228，
-    --       低於 GTA 扭矩曲線有效區間，導致驅動力幾乎為零 → 車子無法加速。
-    --       2 檔頂速 ≈ 61 km/h（16.9 m/s），同樣 20 km/h 時 naturalRpm = 0.330，
-    --       剛好在有效區間內，所以 2 檔可以加速。這就是「2 檔沒問題、3 檔以上不行」的根本原因。
-    --
-    -- 新做法：fInitialDriveMaxFlatVel 固定在 maxGear 頂速（由 ApplyToVehicle 設定後不再改動）。
-    --         這樣任何檔位在任何速度都有足夠的 naturalRpm，GTA 能正常輸出驅動力。
-    --         每檔頂速改用 SetVehicleMaxSpeed 硬限制。
-    --         （不在此處修改 fInitialDriveMaxFlatVel）
-
-    -- SetVehicleMaxSpeed：每檔頂速硬限制（取代舊的 fInitialDriveMaxFlatVel 自然衰減）
-    if type(SetVehicleMaxSpeed) == 'function' then
-        SetVehicleMaxSpeed(vehicle, topSpeedMps)
+    -- [HRSGears] 每次換檔設定當前檔的 fInitialDriveMaxFlatVel。
+    -- 配合 ApplyManualTruth 中 highGear=1、currentGear=1（GTA 內部）：
+    --   naturalRpm = speed / (fInitialDriveMaxFlatVel × ratio[1]/ratio[1])
+    --              = speed / fInitialDriveMaxFlatVel = speed / topSpeedMps[scriptGear]
+    -- gear 3（頂速 24.4 m/s）在 60 km/h 時：naturalRpm = 16.67/24.4 = 0.683 ✓
+    -- 到達各檔頂速時 naturalRpm → 1.0，驅動力自然衰減 ✓
+    -- SetVehicleMaxSpeed 已移除（會讓 GTA 回算爆炸為 300+ m/s）
+    if type(SetVehicleHandlingFloat) == 'function' then
+        SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel', topSpeedMps)
     end
 
-    -- [FIX-B] 重新確認 fInitialDriveForce（防止 GTA 或外部資源靜默修改）
-    -- 只在離合器未切斷時重設，避免與 CutDriveForce(cut=true) 的 0.0001 值衝突
-    local appliedForce = GB.State._appliedDriveForce
-    if appliedForce and appliedForce > 0
-        and not GB.State:ClutchDisengaged()
-        and type(SetVehicleHandlingFloat) == 'function'
-    then
-        SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce', appliedForce)
+    -- [HRSGears] 每次換檔按齒比縮放 fInitialDriveForce（ATMT/MT 模式）。
+    -- 取代 SyncGearTorque（SetVehicleEngineTorqueMultiplier）：
+    --   低檔齒比大（torqueScale > 1）→ 更大的 fInitialDriveForce → 更強的加速力 ✓
+    --   最高檔 torqueScale = 1.0 → 原廠驅動力 ✓
+    -- AT 模式：保持 _appliedDriveForce 不變（GTA 原生齒比邏輯自行處理扭力）
+    if type(SetVehicleHandlingFloat) == 'function' then
+        if state:IsManualMode() then
+            local snapshot = state.handlingSnapshot
+            local baseForce = snapshot and snapshot.driveForce
+            if baseForce and baseForce > 0 and not state:ClutchDisengaged() then
+                local scaledForce = baseForce * torqueScale
+                SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce', scaledForce)
+                state._appliedDriveForce = scaledForce  -- 更新供 CutDriveForce 還原用
+            end
+        else
+            -- AT 模式：重新確認 fInitialDriveForce（防止外部資源靜默修改）
+            local appliedForce = state._appliedDriveForce
+            if appliedForce and appliedForce > 0 and not state:ClutchDisengaged() then
+                SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce', appliedForce)
+            end
+        end
     end
 
     -- 清除 dirty flag

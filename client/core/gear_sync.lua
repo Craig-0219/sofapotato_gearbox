@@ -34,7 +34,21 @@ function GB.GearSync.PullATReference(vehicle, maxGear)
 end
 
 function GB.GearSync.ApplyManualTruth(vehicle)
-    local state = GB.State
-    local gear = math.max(1, math.min(state.currentGear or 1, state:MaxGear()))
-    GB.Native.SyncGear(vehicle, gear)
+    -- [HRSGears] GTA 的內部 gear 永遠鎖在 1，highGear 也設為 1。
+    --
+    -- 原理：GTA AT 的油門切斷條件是「currentGear < highGear 且 naturalRpm 過低」。
+    -- currentGear = highGear = 1 → 條件永遠 false → 油門切斷永不觸發。
+    --
+    -- 各檔的扭力差異由 ApplyGearSpeedLimit（每次換檔）設定
+    -- fInitialDriveForce = snapshot.driveForce × torqueScale，
+    -- 取代原本依賴 SetVehicleEngineTorqueMultiplier 的 SyncGearTorque 方案。
+    --
+    -- naturalRpm = speed / (fInitialDriveMaxFlatVel × ratio[1]/ratio[1])
+    --            = speed / fInitialDriveMaxFlatVel = speed / topSpeedMps[scriptGear]
+    -- → 在各檔頂速時 naturalRpm → 1.0，驅動力自然衰減 ✓
+    GB.Native.SyncGear(vehicle, 1)
+
+    if type(SetVehicleHighGear) == 'function' then
+        SetVehicleHighGear(vehicle, 1)
+    end
 end
