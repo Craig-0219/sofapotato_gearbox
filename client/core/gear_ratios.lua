@@ -318,31 +318,43 @@ function GB.GearRatios.ApplyGearSpeedLimit(vehicle, gear)
     local cache = GB.State.perGearCache
     if not cache or not cache[gear] then return end
 
-    local topSpeedMps = cache[gear].topSpeedMps
-    local cfg = GB.State.cfg
+    local entry       = cache[gear]
+    local topSpeedMps = entry.topSpeedMps
+    local torqueScale = entry.torqueScale   -- ratio[gear] / ratio[maxGear]
+    local state       = GB.State
 
-    -- [FIX-C revert + Fix-D compatible] 每次換檔設定當前檔的 fInitialDriveMaxFlatVel。
-    --
-    -- 配合 Fix-D（highGear = currentGear 每幀）：
-    --   naturalRpm = speed / fInitialDriveMaxFlatVel（齒比在 highGear=currentGear 時相消）
-    --   gear 3 頂速 24.4 m/s，60 km/h 時 naturalRpm = 0.683 → 正常扭力帶 ✓
-    --   到達頂速時 naturalRpm → 1.0+ → 驅動力自然衰減為 0 ✓
-    --
-    -- 已移除 SetVehicleMaxSpeed：
-    --   SetVehicleMaxSpeed(X) + highGear=N 會讓 GTA 以 highGear 反算
-    --   fInitialDriveMaxFlatVel = X × ratio[1] / ratio[N]，導致值爆炸（300+ m/s）。
+    -- [HRSGears] 每次換檔設定當前檔的 fInitialDriveMaxFlatVel。
+    -- 配合 ApplyManualTruth 中 highGear=1、currentGear=1（GTA 內部）：
+    --   naturalRpm = speed / (fInitialDriveMaxFlatVel × ratio[1]/ratio[1])
+    --              = speed / fInitialDriveMaxFlatVel = speed / topSpeedMps[scriptGear]
+    -- gear 3（頂速 24.4 m/s）在 60 km/h 時：naturalRpm = 16.67/24.4 = 0.683 ✓
+    -- 到達各檔頂速時 naturalRpm → 1.0，驅動力自然衰減 ✓
+    -- SetVehicleMaxSpeed 已移除（會讓 GTA 回算爆炸為 300+ m/s）
     if type(SetVehicleHandlingFloat) == 'function' then
         SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveMaxFlatVel', topSpeedMps)
     end
 
-    -- [FIX-B] 重新確認 fInitialDriveForce（防止 GTA 或外部資源靜默修改）
-    -- 只在離合器未切斷時重設，避免與 CutDriveForce(cut=true) 的 0.0001 值衝突
-    local appliedForce = GB.State._appliedDriveForce
-    if appliedForce and appliedForce > 0
-        and not GB.State:ClutchDisengaged()
-        and type(SetVehicleHandlingFloat) == 'function'
-    then
-        SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce', appliedForce)
+    -- [HRSGears] 每次換檔按齒比縮放 fInitialDriveForce（ATMT/MT 模式）。
+    -- 取代 SyncGearTorque（SetVehicleEngineTorqueMultiplier）：
+    --   低檔齒比大（torqueScale > 1）→ 更大的 fInitialDriveForce → 更強的加速力 ✓
+    --   最高檔 torqueScale = 1.0 → 原廠驅動力 ✓
+    -- AT 模式：保持 _appliedDriveForce 不變（GTA 原生齒比邏輯自行處理扭力）
+    if type(SetVehicleHandlingFloat) == 'function' then
+        if state:IsManualMode() then
+            local snapshot = state.handlingSnapshot
+            local baseForce = snapshot and snapshot.driveForce
+            if baseForce and baseForce > 0 and not state:ClutchDisengaged() then
+                local scaledForce = baseForce * torqueScale
+                SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce', scaledForce)
+                state._appliedDriveForce = scaledForce  -- 更新供 CutDriveForce 還原用
+            end
+        else
+            -- AT 模式：重新確認 fInitialDriveForce（防止外部資源靜默修改）
+            local appliedForce = state._appliedDriveForce
+            if appliedForce and appliedForce > 0 and not state:ClutchDisengaged() then
+                SetVehicleHandlingFloat(vehicle, 'CHandlingData', 'fInitialDriveForce', appliedForce)
+            end
+        end
     end
 
     -- 清除 dirty flag
