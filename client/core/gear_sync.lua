@@ -34,21 +34,29 @@ function GB.GearSync.PullATReference(vehicle, maxGear)
 end
 
 function GB.GearSync.ApplyManualTruth(vehicle)
-    -- [HRSGears] GTA 的內部 gear 永遠鎖在 1，highGear 也設為 1。
-    --
-    -- 原理：GTA AT 的油門切斷條件是「currentGear < highGear 且 naturalRpm 過低」。
-    -- currentGear = highGear = 1 → 條件永遠 false → 油門切斷永不觸發。
-    --
-    -- 各檔的扭力差異由 ApplyGearSpeedLimit（每次換檔）設定
-    -- fInitialDriveForce = snapshot.driveForce × torqueScale，
-    -- 取代原本依賴 SetVehicleEngineTorqueMultiplier 的 SyncGearTorque 方案。
-    --
-    -- naturalRpm = speed / (fInitialDriveMaxFlatVel × ratio[1]/ratio[1])
-    --            = speed / fInitialDriveMaxFlatVel = speed / topSpeedMps[scriptGear]
-    -- → 在各檔頂速時 naturalRpm → 1.0，驅動力自然衰減 ✓
-    GB.Native.SyncGear(vehicle, 1)
+    local state = GB.State
+    local gear = math.max(1, math.min(state.currentGear or 1, state:MaxGear()))
 
+    -- 每幀把 GTA 內部 gear 鎖成 scriptGear（防止 GTA AT 覆蓋腳本檔位）
+    GB.Native.SyncGear(vehicle, gear)
+
+    -- [FIX-D] highGear = currentGear 每幀鎖定。
+    --
+    -- GTA AT 的油門切斷條件：currentGear < highGear 且 naturalRpm 過低。
+    -- highGear = currentGear → 條件永遠 false → 油門不被切斷 ✓
+    --
+    -- 為何用 highGear=currentGear 而非 highGear=1（HRSGears 方案）：
+    -- 本 codebase 有多個模組讀取 GetVehicleCurrentGear（gearbox.lua AT 邏輯、
+    -- state.lua、modules/physics.lua 等）。若鎖成 gear 1，這些模組會把
+    -- state.currentGear 覆蓋成 1，導致 ApplyGearSpeedLimit 永遠拿到 gear=1。
+    --
+    -- highGear=currentGear 讓 GTA 看到正確檔位，各模組讀值一致，
+    -- 同時消除 throttle cut 問題。
+    --
+    -- torqueScale 補償：由 ApplyGearSpeedLimit 在每次換檔時設定
+    -- fInitialDriveForce = snapshot.driveForce × torqueScale，
+    -- 不依賴 SyncGearTorque（SetVehicleEngineTorqueMultiplier 可能有 > 1 截斷問題）。
     if type(SetVehicleHighGear) == 'function' then
-        SetVehicleHighGear(vehicle, 1)
+        SetVehicleHighGear(vehicle, gear)
     end
 end
